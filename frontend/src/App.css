@@ -1086,6 +1086,42 @@ body {
 .history-item:hover .history-delete { opacity: 1; }
 .history-delete:hover { color: var(--red); background: #f25f5c0d; }
 
+/* ---------- History Image Preview ---------- */
+.history-images {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.history-image-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+}
+
+.history-image-label {
+  display: block;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+}
+
+.history-image {
+  width: 100%;
+  display: block;
+  object-fit: contain;
+  background: var(--bg-mute);
+  max-height: 400px;
+}
+
 /* ---------- Scrollbar ---------- */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -1118,6 +1154,7 @@ body {
   .analysis-result { grid-template-columns: 1fr; }
   .tree-section { position: static; max-height: none; }
   .vs-badge { margin: -6px auto; }
+  .history-images { grid-template-columns: 1fr; }
   .results-header { flex-direction: column; gap: 10px; align-items: flex-start; }
   .progress-steps { flex-wrap: wrap; gap: 4px; }
   .step-line { width: 16px; }
