@@ -1,15 +1,16 @@
 /**
- * [WHO]: 提供 App 默认导出组件及全部子组件（状态条、进度面板、错误面板、图片上传、结果展示）
+ * [WHO]: 提供 App 默认导出组件及全部子组件（状态条、进度面板、错误面板、图片上传、结果展示、历史记录）
  * [FROM]: 依赖 react, react-markdown, lucide-react, analyzer.js 及 App.css
  * [TO]: 被 main.jsx 挂载为根组件；纯前端直接调用 Claude API
- * [HERE]: frontend/src/App.jsx — React SPA 主组件
+ * [HERE]: frontend/src/App.jsx — React SPA 主组件；支持 hash 路由 (#/task/:id) + localStorage 历史
  */
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
   Eye, EyeOff, ChevronDown, Copy, RotateCcw,
   AlertCircle, AlertTriangle, CheckCircle2, Loader2, X, Plus,
-  Wifi, WifiOff, Key, Clock, Shield, Server, Zap, ImageIcon, Info
+  Wifi, WifiOff, Key, Clock, Shield, Server, Zap, ImageIcon, Info,
+  History, Trash2, ArrowLeft, FileText
 } from 'lucide-react'
 import { compareImages, AnalyzeError, ERROR_TYPES, PHASES } from './analyzer.js'
 import './App.css'
@@ -44,6 +45,68 @@ function useElapsedTime(running) {
   }, [running])
 
   return elapsed
+}
+
+/* ─── Hash 路由 ─── */
+function generateTaskId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+function getTaskIdFromHash() {
+  const match = window.location.hash.match(/^#\/task\/(.+)$/)
+  return match ? match[1] : null
+}
+
+function setHashRoute(taskId) {
+  window.location.hash = taskId ? `/task/${taskId}` : ''
+}
+
+/* ─── localStorage 历史 ─── */
+const STORAGE_KEY = 'visual-diff-history'
+const MAX_HISTORY = 50
+const THUMB_SIZE = 80
+
+/** 将 File 压缩为 base64 缩略图 */
+async function fileToThumbnail(file) {
+  if (!file) return null
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const scale = Math.min(THUMB_SIZE / img.width, THUMB_SIZE / img.height, 1)
+      canvas.width = Math.round(img.width * scale)
+      canvas.height = Math.round(img.height * scale)
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/jpeg', 0.6))
+      URL.revokeObjectURL(img.src)
+    }
+    img.onerror = () => resolve(null)
+    img.src = URL.createObjectURL(file)
+  })
+}
+
+function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+  } catch { return [] }
+}
+
+function saveHistory(records) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, MAX_HISTORY)))
+  } catch { /* quota exceeded — silently fail */ }
+}
+
+function countSeverity(text) {
+  const counts = { '🔴': 0, '🟡': 0, '🟢': 0 }
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.startsWith('🔴')) counts['🔴']++
+    else if (t.startsWith('🟡')) counts['🟡']++
+    else if (t.startsWith('🟢')) counts['🟢']++
+  }
+  return counts
 }
 
 /* ─── 错误类型配置 ─── */
@@ -309,37 +372,134 @@ function SeverityFilter({ filters, onChange }) {
   )
 }
 
-/* ─── 分析结果 ─── */
+/* ─── 分析结果（通用 H2 分段渲染） ─── */
+function splitByH2(text) {
+  const sections = []
+  const lines = text.split('\n')
+  let current = null
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      if (current) sections.push(current)
+      current = { title: line.replace(/^## /, '').trim(), lines: [] }
+    } else {
+      if (current) {
+        current.lines.push(line)
+      } else if (line.trim()) {
+        current = { title: '', lines: [line] }
+      }
+    }
+  }
+  if (current) sections.push(current)
+  return sections.map(s => ({ title: s.title, content: s.lines.join('\n').trim() }))
+}
+
+function filterBySeverity(content, filters) {
+  if (filters.length === 3) return content
+  const lines = content.split('\n')
+  const result = []
+  let skip = false
+  for (const line of lines) {
+    const t = line.trim()
+    if (t.startsWith('🔴') || t.startsWith('🟡') || t.startsWith('🟢')) {
+      skip = !filters.some(f => t.startsWith(f))
+      if (!skip) result.push(line)
+    } else {
+      if (!skip) result.push(line)
+    }
+  }
+  return result.join('\n')
+}
+
 function AnalysisResult({ text, filters }) {
   if (!text) return null
-  const treeMatch = text.match(/(## 组件树.*?)(?=## 问题清单)/s)
-  const analysisMatch = text.match(/(## 问题清单.*)/s)
-  const tree = treeMatch ? treeMatch[1].trim() : ''
-  const analysis = analysisMatch ? analysisMatch[1].trim() : text.trim()
+  const sections = splitByH2(text)
 
-  const filteredAnalysis = analysis.split('\n').filter(line => {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('🔴') || trimmed.startsWith('🟡') || trimmed.startsWith('🟢')) {
-      return filters.some(f => trimmed.startsWith(f))
-    }
-    return true
-  }).join('\n')
-
-  return (
-    <div className="analysis-result">
-      {tree && (
-        <div className="result-section tree-section">
-          <h3 className="section-title">组件树</h3>
-          <div className="markdown-content tree-content">
-            <ReactMarkdown>{tree.replace('## 组件树', '').trim()}</ReactMarkdown>
+  if (sections.length === 0) {
+    return (
+      <div className="analysis-result analysis-result--full">
+        <div className="result-section">
+          <div className="markdown-content">
+            <ReactMarkdown>{text}</ReactMarkdown>
           </div>
         </div>
-      )}
-      <div className="result-section issues-section">
-        <h3 className="section-title">问题清单</h3>
-        <div className="markdown-content issues-content">
-          <ReactMarkdown>{filteredAnalysis.replace('## 问题清单', '').trim()}</ReactMarkdown>
-        </div>
+      </div>
+    )
+  }
+
+  const isIssueSection = (s) =>
+    s.content.includes('🔴') || s.content.includes('🟡') || s.content.includes('🟢')
+
+  return (
+    <div className="analysis-result analysis-result--full">
+      {sections.map((section, idx) => {
+        const content = isIssueSection(section)
+          ? filterBySeverity(section.content, filters)
+          : section.content
+        const titleLower = section.title.toLowerCase()
+        const isTree = titleLower.includes('组件树')
+        const isScore = titleLower.includes('评分')
+        return (
+          <div key={idx} className={`result-section ${isTree ? 'tree-section' : ''} ${isScore ? 'score-section' : ''}`}>
+            {section.title && <h3 className="section-title">{section.title}</h3>}
+            <div className={`markdown-content ${isIssueSection(section) ? 'issues-content' : ''}`}>
+              <ReactMarkdown>{content}</ReactMarkdown>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ─── 历史列表 ─── */
+function HistoryPanel({ history, onSelect, onDelete, currentTaskId }) {
+  if (history.length === 0) return null
+
+  return (
+    <div className="history-panel">
+      <div className="history-header">
+        <History size={14} />
+        <span className="history-title">历史记录</span>
+        <span className="history-count">{history.length}</span>
+      </div>
+      <div className="history-list">
+        {history.map((record) => {
+          const severity = countSeverity(record.result)
+          const isActive = record.id === currentTaskId
+          return (
+            <div
+              key={record.id}
+              className={`history-item ${isActive ? 'active' : ''}`}
+              onClick={() => onSelect(record.id)}
+            >
+              <div className="history-thumbs">
+                {record.artThumb && <img src={record.artThumb} alt="" className="history-thumb" />}
+                {record.gameThumb && <img src={record.gameThumb} alt="" className="history-thumb" />}
+                {!record.artThumb && !record.gameThumb && <FileText size={20} className="history-thumb-placeholder" />}
+              </div>
+              <div className="history-info">
+                <span className="history-time">
+                  {new Date(record.timestamp).toLocaleString('zh-CN', {
+                    month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </span>
+                <span className="history-badges">
+                  {severity['🔴'] > 0 && <span className="badge badge-red">{severity['🔴']}</span>}
+                  {severity['🟡'] > 0 && <span className="badge badge-yellow">{severity['🟡']}</span>}
+                  {severity['🟢'] > 0 && <span className="badge badge-green">{severity['🟢']}</span>}
+                </span>
+              </div>
+              <button
+                className="history-delete"
+                title="删除"
+                onClick={(e) => { e.stopPropagation(); onDelete(record.id) }}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -364,8 +524,72 @@ export default function App() {
   const [error, setError] = useState(null)
   const [filters, setFilters] = useState(['🔴', '🟡', '🟢'])
 
+  // 历史 & 路由
+  const [history, setHistory] = useState(() => loadHistory())
+  const [viewingTaskId, setViewingTaskId] = useState(null)
+  const [viewingResult, setViewingResult] = useState('')
+
   const elapsed = useElapsedTime(loading)
   const canAnalyze = apiKey.trim() && artImage && gameImage && !loading
+
+  // 启动时检查 hash，加载对应历史任务
+  useEffect(() => {
+    const taskId = getTaskIdFromHash()
+    if (taskId) {
+      const record = loadHistory().find(r => r.id === taskId)
+      if (record) {
+        setViewingTaskId(taskId)
+        setViewingResult(record.result)
+      }
+    }
+
+    const onHashChange = () => {
+      const id = getTaskIdFromHash()
+      if (id) {
+        const record = loadHistory().find(r => r.id === id)
+        if (record) {
+          setViewingTaskId(id)
+          setViewingResult(record.result)
+          return
+        }
+      }
+      setViewingTaskId(null)
+      setViewingResult('')
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  // 选择历史记录
+  const handleSelectHistory = useCallback((taskId) => {
+    const record = history.find(r => r.id === taskId)
+    if (record) {
+      setViewingTaskId(taskId)
+      setViewingResult(record.result)
+      setResult('')
+      setError(null)
+      setHashRoute(taskId)
+    }
+  }, [history])
+
+  // 删除历史记录
+  const handleDeleteHistory = useCallback((taskId) => {
+    const updated = history.filter(r => r.id !== taskId)
+    setHistory(updated)
+    saveHistory(updated)
+    if (viewingTaskId === taskId) {
+      setViewingTaskId(null)
+      setViewingResult('')
+      setHashRoute(null)
+    }
+  }, [history, viewingTaskId])
+
+  // 返回首页
+  const handleBackToHome = useCallback(() => {
+    setViewingTaskId(null)
+    setViewingResult('')
+    setHashRoute(null)
+  }, [])
 
   const handleAnalyze = useCallback(async () => {
     if (!apiKey.trim() || !artImage || !gameImage || loading) return
@@ -373,6 +597,8 @@ export default function App() {
     setPhase(null)
     setError(null)
     setResult('')
+    setViewingTaskId(null)
+    setViewingResult('')
 
     try {
       const text = await compareImages(artImage, gameImage, {
@@ -384,17 +610,44 @@ export default function App() {
         onProgress: setPhase,
       })
       setResult(text)
+
+      // 保存到历史
+      const taskId = generateTaskId()
+      const [artThumb, gameThumb] = await Promise.all([
+        fileToThumbnail(artImage),
+        fileToThumbnail(gameImage),
+      ])
+      const record = {
+        id: taskId,
+        timestamp: Date.now(),
+        result: text,
+        artThumb,
+        gameThumb,
+      }
+      const updated = [record, ...history]
+      setHistory(updated)
+      saveHistory(updated)
+      setHashRoute(taskId)
+      setViewingTaskId(taskId)
     } catch (e) {
       setError(e)
     } finally {
       setLoading(false)
     }
-  }, [apiKey, artImage, gameImage, loading, baseUrl, thinkingBudget, canvasW, canvasH])
+  }, [apiKey, artImage, gameImage, loading, baseUrl, thinkingBudget, canvasW, canvasH, history])
+
+  // 当前要展示的结果文本（新分析 or 历史查看）
+  const displayResult = viewingResult || result
 
   return (
     <div className="app">
       <header className="app-header">
         <div className="header-left">
+          {viewingTaskId && !result && (
+            <button className="back-btn" onClick={handleBackToHome} title="返回">
+              <ArrowLeft size={16} />
+            </button>
+          )}
           <h1 className="app-title">Visual Diff</h1>
           <span className="app-divider" />
           <p className="app-subtitle">游戏美术还原度检查</p>
@@ -407,105 +660,137 @@ export default function App() {
           phase={phase}
           elapsed={elapsed}
           error={error}
-          result={result}
+          result={displayResult}
         />
       </header>
 
       <main className="main-content">
-        {/* Config */}
-        <div className="config-bar">
-          <div className="config-fields">
-            <div className="field key-field-group">
-              <label className="field-label">API Key</label>
-              <div className="input-with-action">
-                <input
-                  type={showKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="input"
-                />
-                <button className="input-action" onClick={() => setShowKey(!showKey)} title={showKey ? '隐藏' : '显示'}>
-                  {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-              </div>
-            </div>
-            <div className="field url-field-group">
-              <label className="field-label">服务商 URL</label>
-              <input
-                type="text"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                className="input"
-              />
-            </div>
-            <button
-              className={`toggle-more ${settingsOpen ? 'open' : ''}`}
-              onClick={() => setSettingsOpen(!settingsOpen)}
-              title="更多设置"
-            >
-              <ChevronDown size={16} />
-            </button>
-          </div>
-
-          {settingsOpen && (
-            <div className="config-extra">
-              <div className="field">
-                <label className="field-label">Thinking 预算 ${thinkingBudget.toFixed(2)}</label>
-                <input
-                  type="range" min="0.01" max="0.18" step="0.01"
-                  value={thinkingBudget}
-                  onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
-                  className="range"
-                />
-              </div>
-              <div className="field">
-                <label className="field-label">画布宽度</label>
-                <input type="number" value={canvasW} onChange={(e) => setCanvasW(parseInt(e.target.value) || 2100)} className="input input-narrow" />
-              </div>
-              <div className="field">
-                <label className="field-label">画布高度</label>
-                <input type="number" value={canvasH} onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)} className="input input-narrow" />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Upload */}
-        <div className="upload-area">
-          <ImageDropZone label="设计稿" sublabel="目标效果" image={artImage} onImageChange={setArtImage} />
-          <ImageDropZone label="实机截图" sublabel="实际还原" image={gameImage} onImageChange={setGameImage} />
-        </div>
-
-        {/* Action + Progress */}
-        <div className="action-area">
-          <button
-            className={`analyze-btn ${loading ? 'is-loading' : ''}`}
-            disabled={!canAnalyze}
-            onClick={handleAnalyze}
-          >
-            {loading ? (
-              <><Loader2 size={16} className="spin" /> {phase?.label || '准备中'}…</>
-            ) : (
-              '开始分析'
-            )}
-          </button>
-        </div>
-
-        {loading && <ProgressPanel phase={phase} elapsed={elapsed} />}
-
-        {/* Error */}
-        <ErrorPanel error={error} onDismiss={() => setError(null)} onRetry={handleAnalyze} />
-
-        {/* Results */}
-        {result && (
+        {/* 历史查看模式：只显示结果 */}
+        {viewingTaskId && viewingResult && !result ? (
           <div className="results-area">
             <div className="results-header">
-              <h2 className="results-title">分析报告</h2>
+              <div className="results-title-row">
+                <button className="back-btn-inline" onClick={handleBackToHome}>
+                  <ArrowLeft size={14} /> 返回
+                </button>
+                <h2 className="results-title">分析报告</h2>
+                <span className="results-meta">
+                  {(() => {
+                    const record = history.find(r => r.id === viewingTaskId)
+                    return record ? new Date(record.timestamp).toLocaleString('zh-CN') : ''
+                  })()}
+                </span>
+              </div>
               <SeverityFilter filters={filters} onChange={setFilters} />
             </div>
-            <AnalysisResult text={result} filters={filters} />
+            <AnalysisResult text={viewingResult} filters={filters} />
           </div>
+        ) : (
+          <>
+            {/* Config */}
+            <div className="config-bar">
+              <div className="config-fields">
+                <div className="field key-field-group">
+                  <label className="field-label">API Key</label>
+                  <div className="input-with-action">
+                    <input
+                      type={showKey ? 'text' : 'password'}
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="sk-..."
+                      className="input"
+                    />
+                    <button className="input-action" onClick={() => setShowKey(!showKey)} title={showKey ? '隐藏' : '显示'}>
+                      {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+                <div className="field url-field-group">
+                  <label className="field-label">服务商 URL</label>
+                  <input
+                    type="text"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    className="input"
+                  />
+                </div>
+                <button
+                  className={`toggle-more ${settingsOpen ? 'open' : ''}`}
+                  onClick={() => setSettingsOpen(!settingsOpen)}
+                  title="更多设置"
+                >
+                  <ChevronDown size={16} />
+                </button>
+              </div>
+
+              {settingsOpen && (
+                <div className="config-extra">
+                  <div className="field">
+                    <label className="field-label">Thinking 预算 ${thinkingBudget.toFixed(2)}</label>
+                    <input
+                      type="range" min="0.01" max="0.18" step="0.01"
+                      value={thinkingBudget}
+                      onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
+                      className="range"
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="field-label">画布宽度</label>
+                    <input type="number" value={canvasW} onChange={(e) => setCanvasW(parseInt(e.target.value) || 2100)} className="input input-narrow" />
+                  </div>
+                  <div className="field">
+                    <label className="field-label">画布高度</label>
+                    <input type="number" value={canvasH} onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)} className="input input-narrow" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Upload */}
+            <div className="upload-area">
+              <ImageDropZone label="设计稿" sublabel="目标效果" image={artImage} onImageChange={setArtImage} />
+              <ImageDropZone label="实机截图" sublabel="实际还原" image={gameImage} onImageChange={setGameImage} />
+            </div>
+
+            {/* Action + Progress */}
+            <div className="action-area">
+              <button
+                className={`analyze-btn ${loading ? 'is-loading' : ''}`}
+                disabled={!canAnalyze}
+                onClick={handleAnalyze}
+              >
+                {loading ? (
+                  <><Loader2 size={16} className="spin" /> {phase?.label || '准备中'}…</>
+                ) : (
+                  '开始分析'
+                )}
+              </button>
+            </div>
+
+            {loading && <ProgressPanel phase={phase} elapsed={elapsed} />}
+
+            {/* Error */}
+            <ErrorPanel error={error} onDismiss={() => setError(null)} onRetry={handleAnalyze} />
+
+            {/* 历史记录列表 */}
+            <HistoryPanel
+              history={history}
+              onSelect={handleSelectHistory}
+              onDelete={handleDeleteHistory}
+              currentTaskId={viewingTaskId}
+            />
+
+            {/* Results（新分析结果） */}
+            {result && (
+              <div className="results-area">
+                <div className="results-header">
+                  <h2 className="results-title">分析报告</h2>
+                  <SeverityFilter filters={filters} onChange={setFilters} />
+                </div>
+                <AnalysisResult text={result} filters={filters} />
+              </div>
+            )}
+          </>
         )}
       </main>
 
