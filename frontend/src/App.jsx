@@ -1,19 +1,25 @@
+/**
+ * [WHO]: 提供 App 默认导出组件, ImageDropZone / SeverityFilter / AnalysisResult 子组件
+ * [FROM]: 依赖 react, react-markdown, lucide-react, analyzer.js 及 App.css 样式
+ * [TO]: 被 main.jsx 挂载为根组件；纯前端直接调用 Claude API（无后端依赖，可部署 Netlify）
+ * [HERE]: frontend/src/App.jsx — React SPA 主组件；包含完整 UI 逻辑和所有子组件
+ */
 import { useState, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Upload, Eye, EyeOff, Sparkles, Settings2, ChevronDown,
-  AlertCircle, AlertTriangle, CheckCircle2, Loader2, X, ImageIcon
+  Eye, EyeOff, ChevronDown,
+  AlertCircle, AlertTriangle, CheckCircle2, Loader2, X, Plus
 } from 'lucide-react'
+import { compareImages } from './analyzer.js'
 import './App.css'
 
 const SEVERITY_CONFIG = {
-  '🔴': { label: '高', color: '#ff4757', bg: 'rgba(255,71,87,0.1)', icon: AlertCircle },
-  '🟡': { label: '中', color: '#ffa502', bg: 'rgba(255,165,2,0.1)', icon: AlertTriangle },
-  '🟢': { label: '低', color: '#2ed573', bg: 'rgba(46,213,115,0.1)', icon: CheckCircle2 },
+  '🔴': { label: '高', color: '#dc3545', bg: '#dc35450f', icon: AlertCircle },
+  '🟡': { label: '中', color: '#c58c00', bg: '#c58c000f', icon: AlertTriangle },
+  '🟢': { label: '低', color: '#198754', bg: '#1987540f', icon: CheckCircle2 },
 }
 
-function ImageDropZone({ label, icon, image, onImageChange, accent }) {
+function ImageDropZone({ label, sublabel, image, onImageChange }) {
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef(null)
 
@@ -44,16 +50,13 @@ function ImageDropZone({ label, icon, image, onImageChange, accent }) {
   const preview = image ? URL.createObjectURL(image) : null
 
   return (
-    <motion.div
+    <div
       className={`drop-zone ${dragOver ? 'drag-over' : ''} ${image ? 'has-image' : ''}`}
-      style={{ '--accent': accent }}
       tabIndex={0}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
       onClick={() => inputRef.current?.click()}
-      whileHover={{ scale: 1.01 }}
-      whileTap={{ scale: 0.99 }}
     >
       <input
         ref={inputRef}
@@ -65,23 +68,26 @@ function ImageDropZone({ label, icon, image, onImageChange, accent }) {
       {preview ? (
         <div className="preview-wrapper">
           <img src={preview} alt={label} className="preview-image" />
-          <div className="preview-overlay">
-            <span className="preview-label">{icon} {label}</span>
-            <button className="remove-btn" onClick={(e) => { e.stopPropagation(); onImageChange(null) }}>
-              <X size={16} />
+          <div className="preview-bar">
+            <span className="preview-label">{label}</span>
+            <button
+              className="remove-btn"
+              onClick={(e) => { e.stopPropagation(); onImageChange(null) }}
+              title="移除图片"
+            >
+              <X size={14} />
             </button>
           </div>
         </div>
       ) : (
         <div className="drop-placeholder">
-          <div className="drop-icon-ring">
-            <ImageIcon size={32} strokeWidth={1.5} />
-          </div>
-          <span className="drop-label">{icon} {label}</span>
+          <Plus size={24} strokeWidth={1.5} />
+          <span className="drop-label">{label}</span>
+          <span className="drop-sublabel">{sublabel}</span>
           <span className="drop-hint">拖放、粘贴或点击上传</span>
         </div>
       )}
-    </motion.div>
+    </div>
   )
 }
 
@@ -98,13 +104,12 @@ function SeverityFilter({ filters, onChange }) {
             style={{
               '--chip-color': cfg.color,
               '--chip-bg': active ? cfg.bg : 'transparent',
-              borderColor: active ? cfg.color : 'rgba(255,255,255,0.1)',
             }}
             onClick={() => {
               onChange(active ? filters.filter(f => f !== emoji) : [...filters, emoji])
             }}
           >
-            <Icon size={14} /> {cfg.label}
+            <Icon size={13} /> {cfg.label}
           </button>
         )
       })}
@@ -115,13 +120,11 @@ function SeverityFilter({ filters, onChange }) {
 function AnalysisResult({ text, filters }) {
   if (!text) return null
 
-  // Split into component tree and issue list
   const treeMatch = text.match(/(## 组件树.*?)(?=## 问题清单)/s)
   const analysisMatch = text.match(/(## 问题清单.*)/s)
   const tree = treeMatch ? treeMatch[1].trim() : ''
   const analysis = analysisMatch ? analysisMatch[1].trim() : text.trim()
 
-  // Filter by severity
   const filteredAnalysis = analysis.split('\n').filter(line => {
     const trimmed = line.trim()
     if (trimmed.startsWith('🔴') || trimmed.startsWith('🟡') || trimmed.startsWith('🟢')) {
@@ -131,27 +134,22 @@ function AnalysisResult({ text, filters }) {
   }).join('\n')
 
   return (
-    <motion.div
-      className="analysis-result"
-      initial={{ opacity: 0, y: 30 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-    >
+    <div className="analysis-result">
       {tree && (
         <div className="result-section tree-section">
-          <h3 className="section-title">🌳 组件树</h3>
+          <h3 className="section-title">组件树</h3>
           <div className="markdown-content tree-content">
             <ReactMarkdown>{tree.replace('## 组件树', '').trim()}</ReactMarkdown>
           </div>
         </div>
       )}
       <div className="result-section issues-section">
-        <h3 className="section-title">📋 问题清单</h3>
+        <h3 className="section-title">问题清单</h3>
         <div className="markdown-content issues-content">
           <ReactMarkdown>{filteredAnalysis.replace('## 问题清单', '').trim()}</ReactMarkdown>
         </div>
       </div>
-    </motion.div>
+    </div>
   )
 }
 
@@ -180,23 +178,15 @@ export default function App() {
     setError('')
     setResult('')
 
-    const formData = new FormData()
-    formData.append('art_image', artImage)
-    formData.append('game_image', gameImage)
-    formData.append('api_key', apiKey.trim())
-    formData.append('base_url', baseUrl)
-    formData.append('thinking_budget', thinkingBudget)
-    formData.append('canvas_width', canvasW)
-    formData.append('canvas_height', canvasH)
-
     try {
-      const res = await fetch('/api/analyze', { method: 'POST', body: formData })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || `请求失败 (${res.status})`)
-      }
-      const data = await res.json()
-      setResult(data.result)
+      const text = await compareImages(artImage, gameImage, {
+        apiKey: apiKey.trim(),
+        baseUrl,
+        thinkingBudget,
+        canvasWidth: canvasW,
+        canvasHeight: canvasH,
+      })
+      setResult(text)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -206,186 +196,128 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Ambient background */}
-      <div className="ambient-bg">
-        <div className="orb orb-1" />
-        <div className="orb orb-2" />
-        <div className="orb orb-3" />
-      </div>
-
-      {/* Header */}
       <header className="app-header">
-        <motion.div
-          className="logo-area"
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <div className="logo-icon">🎮</div>
-          <div>
-            <h1 className="app-title">Visual Diff</h1>
-            <p className="app-subtitle">游戏美术效果对比工具</p>
-          </div>
-        </motion.div>
+        <div className="header-left">
+          <h1 className="app-title">Visual Diff</h1>
+          <span className="app-divider" />
+          <p className="app-subtitle">游戏美术还原度检查</p>
+        </div>
       </header>
 
       <main className="main-content">
-        {/* API Key row */}
-        <motion.div
-          className="config-bar glass"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-        >
-          <div className="key-input-group">
-            <label className="input-label">API Key</label>
-            <div className="key-field">
-              <input
-                type={showKey ? 'text' : 'password'}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="text-input key-input"
-              />
-              <button className="icon-btn" onClick={() => setShowKey(!showKey)}>
-                {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </div>
-
-          <div className="url-input-group">
-            <label className="input-label">服务商 URL</label>
-            <input
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              className="text-input"
-            />
-          </div>
-
-          <button
-            className={`settings-toggle ${settingsOpen ? 'open' : ''}`}
-            onClick={() => setSettingsOpen(!settingsOpen)}
-          >
-            <Settings2 size={16} />
-            <ChevronDown size={14} className="chevron" />
-          </button>
-        </motion.div>
-
-        {/* Advanced settings */}
-        <AnimatePresence>
-          {settingsOpen && (
-            <motion.div
-              className="settings-panel glass"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25 }}
-            >
-              <div className="settings-inner">
-                <div className="setting-item">
-                  <label className="input-label">Thinking 预算 (${thinkingBudget.toFixed(2)})</label>
-                  <input
-                    type="range"
-                    min="0.01" max="0.18" step="0.01"
-                    value={thinkingBudget}
-                    onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
-                    className="range-input"
-                  />
-                </div>
-                <div className="setting-item">
-                  <label className="input-label">画布宽度</label>
-                  <input
-                    type="number"
-                    value={canvasW}
-                    onChange={(e) => setCanvasW(parseInt(e.target.value) || 2100)}
-                    className="text-input num-input"
-                  />
-                </div>
-                <div className="setting-item">
-                  <label className="input-label">画布高度</label>
-                  <input
-                    type="number"
-                    value={canvasH}
-                    onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)}
-                    className="text-input num-input"
-                  />
-                </div>
+        {/* Config */}
+        <div className="config-bar">
+          <div className="config-fields">
+            <div className="field key-field-group">
+              <label className="field-label">API Key</label>
+              <div className="input-with-action">
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="input"
+                />
+                <button className="input-action" onClick={() => setShowKey(!showKey)} title={showKey ? '隐藏' : '显示'}>
+                  {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+            <div className="field url-field-group">
+              <label className="field-label">服务商 URL</label>
+              <input
+                type="text"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                className="input"
+              />
+            </div>
+            <button
+              className={`toggle-more ${settingsOpen ? 'open' : ''}`}
+              onClick={() => setSettingsOpen(!settingsOpen)}
+              title="更多设置"
+            >
+              <ChevronDown size={16} />
+            </button>
+          </div>
 
-        {/* Image upload area */}
-        <motion.div
-          className="upload-area"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-        >
+          {settingsOpen && (
+            <div className="config-extra">
+              <div className="field">
+                <label className="field-label">Thinking 预算 ${thinkingBudget.toFixed(2)}</label>
+                <input
+                  type="range"
+                  min="0.01" max="0.18" step="0.01"
+                  value={thinkingBudget}
+                  onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
+                  className="range"
+                />
+              </div>
+              <div className="field">
+                <label className="field-label">画布宽度</label>
+                <input
+                  type="number"
+                  value={canvasW}
+                  onChange={(e) => setCanvasW(parseInt(e.target.value) || 2100)}
+                  className="input input-narrow"
+                />
+              </div>
+              <div className="field">
+                <label className="field-label">画布高度</label>
+                <input
+                  type="number"
+                  value={canvasH}
+                  onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)}
+                  className="input input-narrow"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Upload */}
+        <div className="upload-area">
           <ImageDropZone
-            label="美术效果图"
-            icon="🎨"
-            accent="#6c5ce7"
+            label="设计稿"
+            sublabel="目标效果"
             image={artImage}
             onImageChange={setArtImage}
           />
-          <div className="vs-divider">
-            <span className="vs-text">VS</span>
-          </div>
           <ImageDropZone
-            label="游戏实机截图"
-            icon="🖥️"
-            accent="#00b894"
+            label="实机截图"
+            sublabel="实际还原"
             image={gameImage}
             onImageChange={setGameImage}
           />
-        </motion.div>
+        </div>
 
-        {/* Analyze button */}
-        <motion.div
-          className="action-area"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.3 }}
-        >
+        {/* Action */}
+        <div className="action-area">
           <button
-            className={`analyze-btn ${loading ? 'loading' : ''}`}
+            className={`analyze-btn ${loading ? 'is-loading' : ''}`}
             disabled={!canAnalyze}
             onClick={handleAnalyze}
           >
             {loading ? (
-              <>
-                <Loader2 size={20} className="spin" />
-                <span>AI 分析中…</span>
-              </>
+              <><Loader2 size={16} className="spin" /> 分析中…</>
             ) : (
-              <>
-                <Sparkles size={20} />
-                <span>开始对比分析</span>
-              </>
+              '开始分析'
             )}
           </button>
-        </motion.div>
+        </div>
 
         {/* Error */}
-        <AnimatePresence>
-          {error && (
-            <motion.div
-              className="error-banner"
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-            >
-              <AlertCircle size={16} /> {error}
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {error && (
+          <div className="error-banner">
+            <AlertCircle size={15} /> {error}
+          </div>
+        )}
 
         {/* Results */}
         {result && (
           <div className="results-area">
             <div className="results-header">
-              <h2 className="results-title">📊 分析报告</h2>
+              <h2 className="results-title">分析报告</h2>
               <SeverityFilter filters={filters} onChange={setFilters} />
             </div>
             <AnalysisResult text={result} filters={filters} />
@@ -394,7 +326,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <span>Powered by Claude · Visual Diff Tool</span>
+        Powered by Claude &middot; Visual Diff Tool
       </footer>
     </div>
   )
