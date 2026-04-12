@@ -238,42 +238,58 @@ export async function compareImages(artFile, gameFile, {
   const apiUrl = (baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '')
   const endpoint = `${apiUrl}/v1/messages`
 
-  // 第一次尝试：带 thinking
-  let response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify(requestBody),
-  })
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true',
+  }
+
+  let response
+  try {
+    // 第一次尝试：带 thinking
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    })
+  } catch (err) {
+    // fetch 本身抛错 → 通常是 CORS 或网络不通
+    throw new Error(
+      `无法连接到 ${apiUrl}，请检查：\n` +
+      `1. 服务商 URL 是否正确\n` +
+      `2. 该服务是否支持浏览器跨域访问（CORS）\n` +
+      `3. 网络是否可达\n\n` +
+      `原始错误：${err.message}`
+    )
+  }
 
   // 如果 thinking 不支持，回退到普通模式
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}))
-    // 检查是否是 thinking 相关错误
-    if (errData.error?.message?.toLowerCase().includes('think') || response.status === 400) {
+    const errMsg = errData.error?.message || ''
+
+    if (errMsg.toLowerCase().includes('think') || response.status === 400) {
       const fallbackBody = { ...requestBody }
       delete fallbackBody.thinking
       fallbackBody.max_tokens = Math.min(MODEL_MAX_TOKENS, 8192)
 
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify(fallbackBody),
-      })
-    }
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(fallbackBody),
+        })
+      } catch (err) {
+        throw new Error(`API 重试请求失败：${err.message}`)
+      }
 
-    if (!response.ok) {
-      const detail = errData.error?.message || `API 请求失败 (${response.status})`
-      throw new Error(detail)
+      if (!response.ok) {
+        const retryErr = await response.json().catch(() => ({}))
+        throw new Error(retryErr.error?.message || `API 请求失败 (${response.status})`)
+      }
+    } else {
+      throw new Error(errMsg || `API 请求失败 (${response.status})`)
     }
   }
 
