@@ -24,7 +24,9 @@ Thumbs.db
 
 # Node (root)
 node_modules/
+package.json
 package-lock.json
+.memory-experiments/
 
 # Frontend
 frontend/node_modules/
