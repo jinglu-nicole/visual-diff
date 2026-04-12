@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
-dist/
 build/
 *.egg
 
@@ -22,3 +21,7 @@ env/
 # OS
 Thumbs.db
 .DS_Store
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

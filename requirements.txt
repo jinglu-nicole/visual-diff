@@ -1,3 +1,6 @@
 anthropic>=0.18
 pillow>=10.0
 pyaudioop
+fastapi>=0.104
+uvicorn[standard]>=0.24
+python-multipart>=0.0.6
