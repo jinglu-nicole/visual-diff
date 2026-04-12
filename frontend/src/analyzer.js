@@ -1,8 +1,8 @@
 /**
- * [WHO]: 提供 compareImages() — 直接从浏览器调用 Claude API 进行图片对比分析
+ * [WHO]: 提供 compareImages(), AnalyzeError 类, PHASES 常量
  * [FROM]: utils.js 提供图片预处理 (base64/颜色提取)
  * [TO]: App.jsx 调用
- * [HERE]: frontend/src/analyzer.js — Python analyzer.py 的纯前端等价实现
+ * [HERE]: frontend/src/analyzer.js — Python analyzer.py 的纯前端等价实现；含进度回调和结构化错误
  */
 
 import { imageToBase64, getMediaType, extractDominantColors } from './utils.js'
@@ -10,6 +10,106 @@ import { imageToBase64, getMediaType, extractDominantColors } from './utils.js'
 const MODEL = 'claude-opus-4-5-20251101'
 const DOLLARS_PER_M_TOKENS = 3.0
 const MODEL_MAX_TOKENS = 64000
+
+/** 分析阶段常量 */
+export const PHASES = {
+  PREPROCESSING: { key: 'preprocessing', label: '图片预处理', icon: '🖼️', step: 1, total: 4 },
+  REQUESTING:    { key: 'requesting',    label: '发送请求',   icon: '📡', step: 2, total: 4 },
+  WAITING:       { key: 'waiting',       label: 'AI 分析中',  icon: '🧠', step: 3, total: 4 },
+  PARSING:       { key: 'parsing',       label: '解析结果',   icon: '📋', step: 4, total: 4 },
+}
+
+/** 错误类型枚举 */
+export const ERROR_TYPES = {
+  NETWORK:       'network',
+  CORS:          'cors',
+  AUTH:          'auth',
+  RATE_LIMIT:    'rate_limit',
+  MODEL:         'model',
+  SERVER:        'server',
+  OVERLOADED:    'overloaded',
+  IMAGE:         'image',
+  PARSE:         'parse',
+  UNKNOWN:       'unknown',
+}
+
+/** 结构化错误 */
+export class AnalyzeError extends Error {
+  constructor(type, message, { detail = '', suggestions = [], retryable = false } = {}) {
+    super(message)
+    this.name = 'AnalyzeError'
+    this.type = type
+    this.detail = detail
+    this.suggestions = suggestions
+    this.retryable = retryable
+  }
+}
+
+/** 根据 HTTP 状态码和错误数据构造结构化错误 */
+function classifyApiError(status, errData) {
+  const msg = errData?.error?.message || ''
+  const errType = errData?.error?.type || ''
+
+  if (status === 401 || status === 403) {
+    return new AnalyzeError(ERROR_TYPES.AUTH, 'API Key 无效或已过期', {
+      detail: msg,
+      suggestions: [
+        '检查 API Key 是否正确、完整',
+        '确认 Key 是否有访问该模型的权限',
+        '如果是新创建的 Key，等几分钟后重试',
+      ],
+    })
+  }
+
+  if (status === 429) {
+    return new AnalyzeError(ERROR_TYPES.RATE_LIMIT, '请求过于频繁，已被限流', {
+      detail: msg,
+      suggestions: [
+        '等待 30-60 秒后重试',
+        '检查 API 用量配额是否已满',
+      ],
+      retryable: true,
+    })
+  }
+
+  if (status === 404) {
+    return new AnalyzeError(ERROR_TYPES.MODEL, `模型 ${MODEL} 不可用`, {
+      detail: msg,
+      suggestions: [
+        '确认服务商是否支持该模型',
+        '检查服务商 URL 是否正确',
+      ],
+    })
+  }
+
+  if (status === 529 || errType === 'overloaded_error') {
+    return new AnalyzeError(ERROR_TYPES.OVERLOADED, 'API 服务过载', {
+      detail: msg,
+      suggestions: [
+        '服务器负载过高，请稍后重试',
+        '通常等待 1-5 分钟即可恢复',
+      ],
+      retryable: true,
+    })
+  }
+
+  if (status >= 500) {
+    return new AnalyzeError(ERROR_TYPES.SERVER, `服务端错误 (${status})`, {
+      detail: msg,
+      suggestions: [
+        '这是服务端问题，非你的操作导致',
+        '稍后重试，如持续出现请联系服务商',
+      ],
+      retryable: true,
+    })
+  }
+
+  return new AnalyzeError(ERROR_TYPES.UNKNOWN, msg || `请求失败 (${status})`, {
+    detail: `HTTP ${status}`,
+    suggestions: ['检查网络和服务商 URL 配置'],
+    retryable: true,
+  })
+}
 
 function dollarsToTokens(dollars) {
   return Math.floor(dollars * 1_000_000 / DOLLARS_PER_M_TOKENS)
@@ -188,6 +288,7 @@ function buildPrompt(colors1, colors2, canvasWidth, canvasHeight) {
  * @param {File} artFile - 美术效果图
  * @param {File} gameFile - 游戏实机截图
  * @param {object} options
+ * @param {function} [onProgress] - 进度回调 (phase) => void
  * @returns {Promise<string>} 分析报告文本
  */
 export async function compareImages(artFile, gameFile, {
@@ -196,16 +297,44 @@ export async function compareImages(artFile, gameFile, {
   thinkingBudget = 0.18,
   canvasWidth = 2100,
   canvasHeight = 1080,
+  onProgress = () => {},
 } = {}) {
-  // 并行预处理图片
-  const [img1Base64, img2Base64, img1Type, img2Type, colors1, colors2] = await Promise.all([
-    imageToBase64(artFile),
-    imageToBase64(gameFile),
-    Promise.resolve(getMediaType(artFile)),
-    Promise.resolve(getMediaType(gameFile)),
-    extractDominantColors(artFile),
-    extractDominantColors(gameFile),
-  ])
+
+  // ── 阶段 1：图片预处理 ──
+  onProgress(PHASES.PREPROCESSING)
+
+  // 图片大小校验（单张 > 20MB 警告）
+  const MAX_FILE_SIZE = 20 * 1024 * 1024
+  if (artFile.size > MAX_FILE_SIZE || gameFile.size > MAX_FILE_SIZE) {
+    throw new AnalyzeError(ERROR_TYPES.IMAGE, '图片文件过大', {
+      detail: `设计稿 ${(artFile.size / 1024 / 1024).toFixed(1)}MB，截图 ${(gameFile.size / 1024 / 1024).toFixed(1)}MB`,
+      suggestions: [
+        '单张图片建议不超过 20MB',
+        '可先压缩图片再上传',
+        'PNG 截图可转为 JPEG 减小体积',
+      ],
+    })
+  }
+
+  let img1Base64, img2Base64, img1Type, img2Type, colors1, colors2
+  try {
+    ;[img1Base64, img2Base64, img1Type, img2Type, colors1, colors2] = await Promise.all([
+      imageToBase64(artFile),
+      imageToBase64(gameFile),
+      Promise.resolve(getMediaType(artFile)),
+      Promise.resolve(getMediaType(gameFile)),
+      extractDominantColors(artFile),
+      extractDominantColors(gameFile),
+    ])
+  } catch (err) {
+    throw new AnalyzeError(ERROR_TYPES.IMAGE, '图片预处理失败', {
+      detail: err.message,
+      suggestions: [
+        '确认上传的文件是有效的图片格式（PNG/JPG/WebP）',
+        '尝试重新截图或用其他格式',
+      ],
+    })
+  }
 
   const budgetTokens = Math.max(1024, Math.min(dollarsToTokens(thinkingBudget), MODEL_MAX_TOKENS - 8192))
   const prompt = buildPrompt(colors1, colors2, canvasWidth, canvasHeight)
@@ -221,14 +350,8 @@ export async function compareImages(artFile, gameFile, {
       {
         role: 'user',
         content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: img1Type, data: img1Base64 },
-          },
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: img2Type, data: img2Base64 },
-          },
+          { type: 'image', source: { type: 'base64', media_type: img1Type, data: img1Base64 } },
+          { type: 'image', source: { type: 'base64', media_type: img2Type, data: img2Base64 } },
           { type: 'text', text: prompt },
         ],
       },
@@ -245,31 +368,52 @@ export async function compareImages(artFile, gameFile, {
     'anthropic-dangerous-direct-browser-access': 'true',
   }
 
+  // ── 阶段 2：发送请求 ──
+  onProgress(PHASES.REQUESTING)
+
   let response
   try {
-    // 第一次尝试：带 thinking
     response = await fetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(requestBody),
     })
   } catch (err) {
-    // fetch 本身抛错 → 通常是 CORS 或网络不通
-    throw new Error(
-      `无法连接到 ${apiUrl}，请检查：\n` +
-      `1. 服务商 URL 是否正确\n` +
-      `2. 该服务是否支持浏览器跨域访问（CORS）\n` +
-      `3. 网络是否可达\n\n` +
-      `原始错误：${err.message}`
+    // fetch 抛错 = 网络不通 / CORS 拦截
+    const isCors = err.message?.includes('Failed to fetch') || err.name === 'TypeError'
+    throw new AnalyzeError(
+      isCors ? ERROR_TYPES.CORS : ERROR_TYPES.NETWORK,
+      isCors ? '跨域请求被浏览器拦截 (CORS)' : '网络连接失败',
+      {
+        detail: `${apiUrl}\n${err.message}`,
+        suggestions: isCors
+          ? [
+              '你的服务商 URL 需要支持浏览器跨域访问',
+              '联系服务商后端开启 CORS 响应头（Access-Control-Allow-Origin）',
+              '或使用支持 CORS 的代理地址',
+            ]
+          : [
+              '检查网络是否正常',
+              '确认服务商 URL 是否可访问',
+              '如果在公司内网，确认 VPN 是否连接',
+            ],
+        retryable: !isCors,
+      }
     )
   }
 
-  // 如果 thinking 不支持，回退到普通模式
+  // ── 阶段 3：等待 AI 分析 ──
+  onProgress(PHASES.WAITING)
+
+  // 处理第一次请求的错误
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}))
-    const errMsg = errData.error?.message || ''
+    const errMsg = errData?.error?.message || ''
 
+    // thinking 不支持 → 回退普通模式
     if (errMsg.toLowerCase().includes('think') || response.status === 400) {
+      onProgress(PHASES.REQUESTING) // 重新标记为发送中
+
       const fallbackBody = { ...requestBody }
       delete fallbackBody.thinking
       fallbackBody.max_tokens = Math.min(MODEL_MAX_TOKENS, 8192)
@@ -281,26 +425,48 @@ export async function compareImages(artFile, gameFile, {
           body: JSON.stringify(fallbackBody),
         })
       } catch (err) {
-        throw new Error(`API 重试请求失败：${err.message}`)
+        throw new AnalyzeError(ERROR_TYPES.NETWORK, '回退请求失败', {
+          detail: err.message,
+          suggestions: ['网络可能不稳定，请重试'],
+          retryable: true,
+        })
       }
 
+      onProgress(PHASES.WAITING)
+
       if (!response.ok) {
-        const retryErr = await response.json().catch(() => ({}))
-        throw new Error(retryErr.error?.message || `API 请求失败 (${response.status})`)
+        const retryErrData = await response.json().catch(() => ({}))
+        throw classifyApiError(response.status, retryErrData)
       }
     } else {
-      throw new Error(errMsg || `API 请求失败 (${response.status})`)
+      throw classifyApiError(response.status, errData)
     }
   }
 
-  const data = await response.json()
+  // ── 阶段 4：解析结果 ──
+  onProgress(PHASES.PARSING)
+
+  let data
+  try {
+    data = await response.json()
+  } catch (err) {
+    throw new AnalyzeError(ERROR_TYPES.PARSE, '响应数据解析失败', {
+      detail: err.message,
+      suggestions: ['API 返回了非标准格式，可能是服务商代理的问题', '请重试或联系服务商'],
+      retryable: true,
+    })
+  }
 
   // 提取文本内容（跳过 thinking block）
-  for (const block of data.content) {
+  for (const block of (data.content || [])) {
     if (block.type === 'text') {
       return block.text
     }
   }
 
-  return '（无文本输出）'
+  throw new AnalyzeError(ERROR_TYPES.PARSE, 'AI 返回了空结果', {
+    detail: JSON.stringify(data.content?.map(b => b.type) || []),
+    suggestions: ['模型可能只输出了 thinking 内容而没有正文', '请重试'],
+    retryable: true,
+  })
 }
