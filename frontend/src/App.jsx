@@ -463,57 +463,163 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
   const isIssueSection = (s) =>
     s.content.includes('🔴') || s.content.includes('🟡') || s.content.includes('🟢')
 
-  // 识别组件树区域：从 "组件树" 开始，到 "问题清单"/"还原度评分" 之前的所有 section 都属于树
+  // 识别组件树区域
   const treeStartIdx = sections.findIndex(s => s.title.includes('组件树'))
   const treeEndIdx = sections.findIndex((s, i) =>
     i > treeStartIdx && (s.title.includes('问题清单') || s.title.includes('评分'))
   )
   const treeSections = treeStartIdx >= 0
     ? sections.slice(treeStartIdx, treeEndIdx >= 0 ? treeEndIdx : undefined)
-        .filter(s => !isIssueSection(s)) // 安全过滤：不把含问题条目的section放进树
+        .filter(s => !isIssueSection(s))
     : []
   const treeSectionSet = new Set(treeSections)
-  const rightSections = sections.filter(s => !treeSectionSet.has(s))
+
+  // 组件树子区块（去掉总标题 "组件树"）
+  const treeOverview = treeSections.find(s => s.title.includes('组件树'))
+  const treeBlocks = treeSections.filter(s => s !== treeOverview)
+
+  // 找到问题清单 section，按 ### 拆成子组
+  const issueSection = sections.find(s => s.title.includes('问题清单'))
+  const issueGroups = issueSection ? splitByH3(issueSection.content) : []
+
+  // 其他 section（评分等）
+  const otherSections = sections.filter(s => !treeSectionSet.has(s) && s !== issueSection)
+
+  // 将每个树区块与问题组配对
+  const paired = treeBlocks.map(block => {
+    // 从标题提取区块名：去掉 ▌ 和前后空格/符号
+    const blockName = block.title.replace(/^[▌·\s]+/, '').replace(/[·\s]+$/, '').trim()
+    // 模糊匹配：问题组标题包含区块名
+    const matchedGroups = []
+    const unmatchedHolder = []
+    for (const group of issueGroups) {
+      if (group._matched) continue
+      // 标题如 "[顶部导航栏 · 默认态]" 包含 "顶部导航栏"
+      if (blockName && group.heading && group.heading.includes(blockName)) {
+        group._matched = true
+        matchedGroups.push(group)
+      }
+    }
+    return { block, issues: matchedGroups }
+  })
+
+  // 未匹配的问题组
+  const unmatchedIssues = issueGroups.filter(g => !g._matched)
 
   return (
-    <div className="analysis-result">
-      {/* 左栏：组件树（含 ▌区块子 section） */}
-      {treeSections.length > 0 && (
-        <div className="result-section tree-section">
-          {treeSections.map((section, idx) => (
-            <div key={idx} className={idx > 0 ? 'tree-sub-section' : ''}>
-              <h3 className="section-title">{section.title}</h3>
-              <div className="markdown-content">
-                <ReactMarkdown>{section.content}</ReactMarkdown>
-              </div>
-            </div>
-          ))}
+    <div className="analysis-paired">
+      {/* 总览行：组件树概览（如果有） */}
+      {treeOverview && treeOverview.content.trim() && (
+        <div className="paired-overview result-section tree-section">
+          <h3 className="section-title">{treeOverview.title}</h3>
+          <div className="markdown-content">
+            <ReactMarkdown>{treeOverview.content}</ReactMarkdown>
+          </div>
         </div>
       )}
 
-      {/* 右栏：问题清单 + 评分 + 其他 */}
-      <div className="result-right">
-        {rightSections.map((section, idx) => {
-          const isIssue = isIssueSection(section)
-          const content = isIssue
-            ? filterBySeverity(section.content, filters)
-            : section.content
-          const isScore = section.title.toLowerCase().includes('评分')
-          return (
-            <div key={idx} className={`result-section ${isScore ? 'score-section' : ''} ${isIssue ? 'issues-section' : ''}`}>
-              {section.title && <h3 className="section-title">{section.title}</h3>}
-              {isIssue && onFiltersChange && (
-                <SeverityFilter filters={filters} onChange={onFiltersChange} />
-              )}
-              <div className={`markdown-content ${isIssue ? 'issues-content' : ''}`}>
-                <ReactMarkdown>{content}</ReactMarkdown>
+      {/* 筛选条 */}
+      {issueSection && onFiltersChange && (
+        <div className="paired-filters">
+          <span className="paired-filters-label">按优先级筛选问题</span>
+          <SeverityFilter filters={filters} onChange={onFiltersChange} />
+        </div>
+      )}
+
+      {/* 逐区块对照 */}
+      {paired.map(({ block, issues }, idx) => {
+        const hasIssues = issues.length > 0
+        const issueContent = hasIssues
+          ? issues.map(g => `### ${g.heading}\n${g.content}`).join('\n\n')
+          : ''
+        const filteredContent = hasIssues ? filterBySeverity(issueContent, filters) : ''
+        // 过滤后是否还有可见问题
+        const filteredHasContent = filteredContent.trim().split('\n').some(l => {
+          const t = l.trim()
+          return t.startsWith('🔴') || t.startsWith('🟡') || t.startsWith('🟢')
+        })
+
+        return (
+          <div key={idx} className="paired-row">
+            <div className="paired-left result-section tree-section">
+              <h3 className="section-title">{block.title}</h3>
+              <div className="markdown-content">
+                <ReactMarkdown>{block.content}</ReactMarkdown>
               </div>
             </div>
-          )
-        })}
-      </div>
+            <div className={`paired-right result-section ${hasIssues ? 'issues-section' : 'empty-section'}`}>
+              {hasIssues ? (
+                filteredHasContent ? (
+                  <div className="markdown-content issues-content">
+                    <ReactMarkdown>{filteredContent}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    <span className="empty-icon">🎯</span>
+                    <span className="empty-text">当前筛选条件下无问题</span>
+                  </div>
+                )
+              ) : (
+                <div className="empty-state">
+                  <span className="empty-icon">✨</span>
+                  <span className="empty-text">真棒，此区域无问题！</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* 未配对的问题（兜底） */}
+      {unmatchedIssues.length > 0 && (
+        <div className="paired-row">
+          <div className="paired-left result-section tree-section">
+            <h3 className="section-title">其他</h3>
+          </div>
+          <div className="paired-right result-section issues-section">
+            <div className="markdown-content issues-content">
+              <ReactMarkdown>{filterBySeverity(
+                unmatchedIssues.map(g => `### ${g.heading}\n${g.content}`).join('\n\n'),
+                filters
+              )}</ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 评分等其他 section */}
+      {otherSections.map((section, idx) => {
+        const isScore = section.title.toLowerCase().includes('评分')
+        return (
+          <div key={`other-${idx}`} className={`result-section paired-full ${isScore ? 'score-section' : ''}`}>
+            {section.title && <h3 className="section-title">{section.title}</h3>}
+            <div className="markdown-content">
+              <ReactMarkdown>{section.content}</ReactMarkdown>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
+}
+
+/** 按 ### 标题拆分内容为子组 */
+function splitByH3(text) {
+  const groups = []
+  const lines = text.split('\n')
+  let current = null
+  for (const line of lines) {
+    if (line.startsWith('### ')) {
+      if (current) groups.push(current)
+      current = { heading: line.replace(/^### /, '').trim(), content: '', _matched: false }
+    } else if (current) {
+      current.content += line + '\n'
+    }
+  }
+  if (current) groups.push(current)
+  // trim content
+  groups.forEach(g => { g.content = g.content.trim() })
+  return groups
 }
 
 /* ─── 历史图片预览（从 IndexedDB 加载高清图） ─── */
@@ -772,7 +878,7 @@ export default function App() {
           <span className="header-emoji">🎮</span>
           <h1 className="app-title">Visual Diff</h1>
           <span className="app-divider" />
-          <p className="app-subtitle">美术还原度小助手</p>
+          <p className="app-subtitle">美术还原度小助手 · @xuqing1</p>
         </div>
         <StatusBar
           apiKey={apiKey}
