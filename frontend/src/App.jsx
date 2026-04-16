@@ -13,6 +13,7 @@ import {
   History, Trash2, ArrowLeft, FileText
 } from 'lucide-react'
 import { compareImages, AnalyzeError, ERROR_TYPES, PHASES } from './analyzer.js'
+import { saveImages, loadImages, deleteImages } from './imageStore.js'
 import './App.css'
 
 /* ─── 工具 ─── */
@@ -86,8 +87,8 @@ async function fileToThumbnail(file) {
   })
 }
 
-/** 将 File 压缩为可查看的预览图（宽度限 600px，JPEG 质量 0.7） */
-const PREVIEW_MAX_WIDTH = 600
+/** 将 File 压缩为可查看的预览图（宽度限 1600px，JPEG 质量 0.85，存入 IndexedDB） */
+const PREVIEW_MAX_WIDTH = 1600
 async function fileToPreview(file) {
   if (!file) return null
   return new Promise((resolve) => {
@@ -99,7 +100,7 @@ async function fileToPreview(file) {
       canvas.height = Math.round(img.height * scale)
       const ctx = canvas.getContext('2d')
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      resolve(canvas.toDataURL('image/jpeg', 0.7))
+      resolve(canvas.toDataURL('image/jpeg', 0.85))
       URL.revokeObjectURL(img.src)
     }
     img.onerror = () => resolve(null)
@@ -515,6 +516,51 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
   )
 }
 
+/* ─── 历史图片预览（从 IndexedDB 加载高清图） ─── */
+function HistoryImagePreview({ taskId }) {
+  const [images, setImages] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!taskId) { setImages(null); setLoading(false); return }
+    setLoading(true)
+    loadImages(taskId).then((data) => {
+      setImages(data)
+      setLoading(false)
+    })
+  }, [taskId])
+
+  if (loading) {
+    return (
+      <div className="history-images history-images-loading">
+        <Loader2 size={16} className="spin" />
+        <span>加载图片中…</span>
+      </div>
+    )
+  }
+
+  if (!images) return null
+  const { artPreview, gamePreview } = images
+  if (!artPreview && !gamePreview) return null
+
+  return (
+    <div className="history-images">
+      {artPreview && (
+        <div className="history-image-card">
+          <span className="history-image-label">🎨 设计稿</span>
+          <img src={artPreview} alt="设计稿" className="history-image" />
+        </div>
+      )}
+      {gamePreview && (
+        <div className="history-image-card">
+          <span className="history-image-label">🖥️ 实机截图</span>
+          <img src={gamePreview} alt="实机截图" className="history-image" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ─── 历史列表 ─── */
 function HistoryPanel({ history, onSelect, onDelete, currentTaskId }) {
   if (history.length === 0) return null
@@ -644,6 +690,7 @@ export default function App() {
     const updated = history.filter(r => r.id !== taskId)
     setHistory(updated)
     saveHistory(updated)
+    deleteImages(taskId) // 清理 IndexedDB 大图
     if (viewingTaskId === taskId) {
       setViewingTaskId(null)
       setViewingResult('')
@@ -686,14 +733,17 @@ export default function App() {
         fileToPreview(artImage),
         fileToPreview(gameImage),
       ])
+
+      // 大图存 IndexedDB（不占 localStorage 配额）
+      await saveImages(taskId, { artPreview, gamePreview })
+
+      // 元数据+缩略图存 localStorage
       const record = {
         id: taskId,
         timestamp: Date.now(),
         result: text,
         artThumb,
         gameThumb,
-        artPreview,
-        gamePreview,
       }
       const updated = [record, ...history]
       setHistory(updated)
@@ -755,30 +805,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* 历史图片预览 */}
-            {(() => {
-              const record = history.find(r => r.id === viewingTaskId)
-              if (!record) return null
-              const artSrc = record.artPreview || record.artThumb
-              const gameSrc = record.gamePreview || record.gameThumb
-              if (!artSrc && !gameSrc) return null
-              return (
-                <div className="history-images">
-                  {artSrc && (
-                    <div className="history-image-card">
-                      <span className="history-image-label">🎨 设计稿</span>
-                      <img src={artSrc} alt="设计稿" className="history-image" />
-                    </div>
-                  )}
-                  {gameSrc && (
-                    <div className="history-image-card">
-                      <span className="history-image-label">🖥️ 实机截图</span>
-                      <img src={gameSrc} alt="实机截图" className="history-image" />
-                    </div>
-                  )}
-                </div>
-              )
-            })()}
+            {/* 历史图片预览 — 从 IndexedDB 异步加载 */}
+            <HistoryImagePreview taskId={viewingTaskId} />
 
             <AnalysisResult text={viewingResult} filters={filters} onFiltersChange={setFilters} />
           </div>
