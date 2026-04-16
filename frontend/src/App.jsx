@@ -593,9 +593,13 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
         return (
           <div key={`other-${idx}`} className={`result-section paired-full ${isScore ? 'score-section' : ''}`}>
             {section.title && <h3 className="section-title">{section.title}</h3>}
-            <div className="markdown-content">
-              <ReactMarkdown>{section.content}</ReactMarkdown>
-            </div>
+            {isScore ? (
+              <ScoreCard content={section.content} />
+            ) : (
+              <div className="markdown-content">
+                <ReactMarkdown>{section.content}</ReactMarkdown>
+              </div>
+            )}
           </div>
         )
       })}
@@ -603,7 +607,85 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
   )
 }
 
-/** 按 ### 标题拆分内容为子组 */
+/** 解析评分表格文本为结构化数据 */
+function parseScoreTable(content) {
+  const rows = []
+  let totalScore = null
+  let totalReason = ''
+  for (const line of content.split('\n')) {
+    // 匹配表格行：| P1 | 位置 | 8/10 | 原因 |
+    const m = line.match(/\|\s*(\S+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\/\s*(\d+)\s*\|\s*(.*?)\s*\|/)
+    if (m) {
+      rows.push({ priority: m[1], dimension: m[2].trim(), score: parseInt(m[3]), total: parseInt(m[4]), reason: m[5].trim() })
+    }
+    // 匹配综合得分行：| — | **综合还原度** | **85/100** |
+    const totalMatch = line.match(/综合还原度.*?\*?\*?(\d+)\s*\/\s*(\d+)\*?\*?/)
+    if (totalMatch) {
+      totalScore = { score: parseInt(totalMatch[1]), total: parseInt(totalMatch[2]) }
+      const reasonM = line.match(/\|\s*([^|]*?)\s*\|?\s*$/)
+      if (reasonM) totalReason = reasonM[1].replace(/\*+/g, '').trim()
+    }
+  }
+  return { rows, totalScore, totalReason }
+}
+
+function ScoreCard({ content }) {
+  const { rows, totalScore } = parseScoreTable(content)
+
+  if (rows.length === 0 && !totalScore) {
+    // 无法解析，回退到 markdown
+    return (
+      <div className="markdown-content">
+        <ReactMarkdown>{content}</ReactMarkdown>
+      </div>
+    )
+  }
+
+  const overallPct = totalScore ? Math.round(totalScore.score / totalScore.total * 100) : null
+  const overallColor = overallPct >= 80 ? 'var(--mint)' : overallPct >= 60 ? 'var(--amber)' : 'var(--red)'
+
+  return (
+    <div className="score-visual">
+      {/* 综合得分 */}
+      {totalScore && (
+        <div className="score-hero">
+          <div className="score-ring" style={{ '--pct': overallPct, '--ring-color': overallColor }}>
+            <svg viewBox="0 0 100 100" className="score-ring-svg">
+              <circle cx="50" cy="50" r="42" className="ring-bg" />
+              <circle cx="50" cy="50" r="42" className="ring-fill" strokeDasharray={`${overallPct * 2.64} 264`} />
+            </svg>
+            <div className="score-ring-value">
+              <span className="score-number">{totalScore.score}</span>
+              <span className="score-total">/{totalScore.total}</span>
+            </div>
+          </div>
+          <div className="score-hero-label">综合还原度</div>
+        </div>
+      )}
+
+      {/* 分项评分 */}
+      <div className="score-items">
+        {rows.map((row, i) => {
+          const pct = Math.round(row.score / row.total * 100)
+          const color = pct >= 80 ? 'var(--mint)' : pct >= 60 ? 'var(--amber)' : 'var(--red)'
+          return (
+            <div key={i} className="score-item">
+              <div className="score-item-header">
+                <span className="score-item-priority">{row.priority}</span>
+                <span className="score-item-dim">{row.dimension}</span>
+                <span className="score-item-value" style={{ color }}>{row.score}<small>/{row.total}</small></span>
+              </div>
+              <div className="score-bar-track">
+                <div className="score-bar-fill" style={{ width: `${pct}%`, background: color }} />
+              </div>
+              {row.reason && <p className="score-item-reason">{row.reason}</p>}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 function splitByH3(text) {
   const groups = []
   const lines = text.split('\n')
