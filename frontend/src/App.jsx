@@ -524,16 +524,6 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
 
   return (
     <div className="analysis-paired">
-      {/* 总览行：组件树概览（如果有） */}
-      {treeOverview && treeOverview.content.trim() && (
-        <div className="paired-overview result-section tree-section">
-          <h3 className="section-title">{treeOverview.title}</h3>
-          <div className="markdown-content">
-            <ReactMarkdown>{treeOverview.content}</ReactMarkdown>
-          </div>
-        </div>
-      )}
-
       {/* 筛选条 */}
       {issueSection && onFiltersChange && (
         <div className="paired-filters">
@@ -627,22 +617,33 @@ function AnalysisResult({ text, filters, onFiltersChange }) {
 function parseScoreTable(content) {
   const rows = []
   let totalScore = null
-  let totalReason = ''
   for (const line of content.split('\n')) {
-    // 匹配表格行：| P1 | 位置 | 8/10 | 原因 |
-    const m = line.match(/\|\s*(\S+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\/\s*(\d+)\s*\|\s*(.*?)\s*\|/)
-    if (m) {
-      rows.push({ priority: m[1], dimension: m[2].trim(), score: parseInt(m[3]), total: parseInt(m[4]), reason: m[5].trim() })
-    }
-    // 匹配综合得分行：| — | **综合还原度** | **85/100** |
-    const totalMatch = line.match(/综合还原度.*?\*?\*?(\d+)\s*\/\s*(\d+)\*?\*?/)
+    // 跳过表头分隔行 |---|---|
+    if (/^\s*\|[\s\-:|]+\|\s*$/.test(line)) continue
+    // 跳过表头行（含 "维度" 或 "得分"）
+    if (/维度|得分|优先级/.test(line) && line.includes('|')) continue
+    // 匹配综合得分行：| — | **综合还原度** | **85/100** | ... |
+    const totalMatch = line.match(/综合还原度.*?(\d+)\s*\/\s*(\d+)/)
     if (totalMatch) {
       totalScore = { score: parseInt(totalMatch[1]), total: parseInt(totalMatch[2]) }
-      const reasonM = line.match(/\|\s*([^|]*?)\s*\|?\s*$/)
-      if (reasonM) totalReason = reasonM[1].replace(/\*+/g, '').trim()
+      continue
+    }
+    // 匹配普通行：| P1 | 位置 | 8/10 | 扣分原因... |
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean)
+    if (cells.length >= 4) {
+      const scoreM = cells[2].match(/(\d+)\s*\/\s*(\d+)/)
+      if (scoreM) {
+        rows.push({
+          priority: cells[0],
+          dimension: cells[1].replace(/\*+/g, ''),
+          score: parseInt(scoreM[1]),
+          total: parseInt(scoreM[2]),
+          reason: cells.slice(3).join(' ').replace(/\*+/g, '').trim()
+        })
+      }
     }
   }
-  return { rows, totalScore, totalReason }
+  return { rows, totalScore }
 }
 
 function ScoreCard({ content }) {
