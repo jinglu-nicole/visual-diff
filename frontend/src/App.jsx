@@ -647,10 +647,8 @@ function parseScoreTable(content) {
 
 function ScoreCard({ content }) {
   const { rows, totalScore } = parseScoreTable(content)
-  const [showRaw, setShowRaw] = useState(false)
 
   if (rows.length === 0 && !totalScore) {
-    // 无法解析，回退到 markdown
     return (
       <div className="markdown-content">
         <ReactMarkdown>{content}</ReactMarkdown>
@@ -658,11 +656,30 @@ function ScoreCard({ content }) {
     )
   }
 
+  // 提取表格前后的文字内容（总结、说明等）
+  const lines = content.split('\n')
+  const tableStartIdx = lines.findIndex(l => l.trim().startsWith('|'))
+  const tableEndIdx = (() => {
+    let last = -1
+    lines.forEach((l, i) => { if (l.trim().startsWith('|')) last = i })
+    return last
+  })()
+  const beforeTable = tableStartIdx > 0 ? lines.slice(0, tableStartIdx).join('\n').trim() : ''
+  const afterTable = tableEndIdx >= 0 && tableEndIdx < lines.length - 1
+    ? lines.slice(tableEndIdx + 1).join('\n').trim() : ''
+
   const overallPct = totalScore ? Math.round(totalScore.score / totalScore.total * 100) : null
   const overallColor = overallPct >= 80 ? 'var(--mint)' : overallPct >= 60 ? 'var(--amber)' : 'var(--red)'
 
   return (
     <div className="score-visual">
+      {/* 表格前的文字 */}
+      {beforeTable && (
+        <div className="score-pretext markdown-content">
+          <ReactMarkdown>{beforeTable}</ReactMarkdown>
+        </div>
+      )}
+
       {/* 综合得分 */}
       {totalScore && (
         <div className="score-hero">
@@ -680,7 +697,7 @@ function ScoreCard({ content }) {
         </div>
       )}
 
-      {/* 分项评分 */}
+      {/* 分项评分 — 每项一行 */}
       <div className="score-items">
         {rows.map((row, i) => {
           const pct = Math.round(row.score / row.total * 100)
@@ -701,17 +718,12 @@ function ScoreCard({ content }) {
         })}
       </div>
 
-      {/* 完整原文（可折叠） */}
-      <div className="score-raw-toggle">
-        <button className="score-raw-btn" onClick={() => setShowRaw(!showRaw)}>
-          {showRaw ? '收起原始报告 ▲' : '查看完整原始报告 ▼'}
-        </button>
-        {showRaw && (
-          <div className="markdown-content score-raw-content">
-            <ReactMarkdown>{content}</ReactMarkdown>
-          </div>
-        )}
-      </div>
+      {/* 表格后的文字（总结等） */}
+      {afterTable && (
+        <div className="score-posttext markdown-content">
+          <ReactMarkdown>{afterTable}</ReactMarkdown>
+        </div>
+      )}
     </div>
   )
 }

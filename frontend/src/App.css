@@ -1097,39 +1097,15 @@ body {
   line-height: 1.5;
 }
 
-/* Score raw toggle */
-.score-raw-toggle {
+.score-pretext,
+.score-posttext {
   flex-basis: 100%;
-  margin-top: 8px;
 }
 
-.score-raw-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: var(--font);
-  color: var(--text-3);
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: 100px;
-  cursor: pointer;
-  transition: all var(--ease);
-}
-.score-raw-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.score-raw-content {
-  margin-top: 12px;
-  padding: 16px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.score-posttext {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 
 /* ---------- Markdown ---------- */
