@@ -115,7 +115,33 @@ function dollarsToTokens(dollars) {
   return Math.floor(dollars * 1_000_000 / DOLLARS_PER_M_TOKENS)
 }
 
-function buildPrompt(colors1, colors2, canvasWidth, canvasHeight) {
+function buildPrompt(colors1, colors2, canvasWidth, canvasHeight, artDims, gameDims) {
+  // 计算适配信息
+  const designW = canvasWidth, designH = canvasHeight
+  let adaptationInfo = ''
+  if (artDims && gameDims) {
+    const artRatio = (artDims.width / artDims.height).toFixed(3)
+    const gameRatio = (gameDims.width / gameDims.height).toFixed(3)
+    const designRatio = (designW / designH).toFixed(3)
+    // SGUI 缩放逻辑：长边缩放适配，短边拉伸
+    const gameScale = Math.min(gameDims.width / designW, gameDims.height / designH)
+    adaptationInfo = `
+━━━━━━━━━━━━━━━━━━━━━━━━
+📏 图片实际分辨率（自动检测）
+━━━━━━━━━━━━━━━━━━━━━━━━
+设计分辨率：${designW}×${designH}（宽高比 ${designRatio}）
+设计稿图片：${artDims.width}×${artDims.height}（宽高比 ${artRatio}）
+实机截图：${gameDims.width}×${gameDims.height}（宽高比 ${gameRatio}）
+实机→设计 缩放因子：${gameScale.toFixed(4)}
+
+适配分析提示：
+${gameRatio === designRatio ? '• 实机截图与设计分辨率宽高比一致，可直接逐像素比较位置/间距' :
+  gameRatio > designRatio ? `• 实机截图比设计分辨率更宽（${gameRatio} > ${designRatio}），高度方向 1:1 缩放，宽度方向有额外拉伸区域。靠左右边缘的元素位置可能因拉伸而与设计稿不同，这是正常适配行为，不算问题` :
+  `• 实机截图比设计分辨率更窄（${gameRatio} < ${designRatio}），整体缩小后高度方向拉伸。所有元素视觉上更小，比较间距时需除以缩放因子 ${gameScale.toFixed(4)} 换算到设计分辨率坐标系`}
+${artRatio !== designRatio ? `• ⚠ 设计稿图片宽高比（${artRatio}）与设计分辨率（${designRatio}）不一致，可能是截图时带了额外区域或裁切不准` : ''}
+`
+  }
+
   return `你是一位专业的游戏 GUI 还原度审查专家。请对比以下两张图片：
 - 图1：UI 设计效果图（目标规范）
 - 图2：游戏实机截图（实际还原）
@@ -128,6 +154,7 @@ function buildPrompt(colors1, colors2, canvasWidth, canvasHeight) {
 
 请在分析色彩时优先参考上述色值，结合视觉观察判断颜色差异，避免凭感觉估色。
 所有颜色描述统一使用 **#十六进制（日本传统色名）** 格式，十六进制色值以实际图像取色为准，括号内附上日本传统色彩体系（和色）中最近似的色名作为语义描述，例如：#F26522（朱色）、#FEEEED（樱色）、#7A1723（绯色）。
+${adaptationInfo}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ 分析前提（请严格遵守）
@@ -135,16 +162,23 @@ function buildPrompt(colors1, colors2, canvasWidth, canvasHeight) {
 1. 【忽略文本内容】两图文字内容可能不同（名称、数值等），只对比文字的视觉样式（字体/字号/字重/颜色）
 2. 【忽略状态位置】Tab 选中态、按钮激活态等所在位置可以不同，对比的是「同一状态的样式规范」是否一致
 3. 【间距是固定值】元素组之间的 padding/gap 是设计 token，与组内内容长短无关。例如文字段落和下方列表之间的间距应为固定值，不受行数影响。请识别组间间距并判断还原是否正确
-4. 【画布基础分辨率为 ${canvasWidth}×${canvasHeight}】所有间距分析基于此分辨率
+4. 【设计分辨率为 ${canvasWidth}×${canvasHeight}】这是项目的基准分辨率——所有 UI 元素在此分辨率下完美摆放，美术效果图也基于此分辨率制作。如果实机截图分辨率与设计分辨率不一致，需考虑缩放因子（scale = 实机短边 / 设计短边），所有间距/大小的比较应换算到设计分辨率坐标系下再判断差异
 5. 【进度条/滑块类组件】只分析其与容器或画布边缘的位置关系（padding/margin），完全忽略进度值、填充比例等动态内容的差异
 6. 【列表/网格类组件】忽略列表项数量差异，只关注：单个列表项的尺寸大小、列表项内部的信息元素构成（**有无**名称文案、数量文字、图标等，有无本身就是差异，必须标出**）、列表项之间的 padding/gap
 7. 【头像/角色/图标列表】重点检查单个元素的尺寸是否与设计稿一致，忽略数量差异
 8. 【按钮/操作区块必须识别】界面角落（尤其右下角、右上角）的按钮组、功能按钮区块是独立的功能区块，必须在组件树中单独列出。对于靠近画布边缘的按钮，必须分析其与画布底边、右边的 padding 差异
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-📐 画布适配规则（分析时需考虑）
+📐 屏幕适配与设计分辨率规则
 ━━━━━━━━━━━━━━━━━━━━━━━━
-游戏 UI 通常使用锚点（Anchor）系统进行布局适配，常见模式如下：
+游戏 UI 基于设计分辨率 ${canvasWidth}×${canvasHeight} 制作，使用锚点（Anchor）系统进行布局适配。
+
+**适配缩放逻辑**：确保长边缩放适配屏幕后，短边拉伸适配。
+- 如果实机分辨率比设计分辨率更宽（如 2380×1080 vs 1920×1080），高度 1:1 不变，宽度方向拉伸
+- 如果实机分辨率比设计分辨率更窄，整体按比例缩小，然后高度方向拉伸
+- 因此分析间距时，需要先判断实机截图的实际分辨率，再换算到设计分辨率坐标系比较
+
+**常见锚点布局模式**：
 
 • **固定角点（Corner）**：元素锚定在画布某个角，与该角保持固定距离，不随画布缩放改变——靠近画布边缘的元素通常采用此模式，其与画布边界的 padding 是固定值
 • **拉伸适配（Stretch-Stretch）**：元素四边同时锚定父容器四边，随父容器等比拉伸——此类元素的内边距（Left/Right/Top/Bottom）保持固定，元素尺寸自动计算
@@ -157,7 +191,7 @@ function buildPrompt(colors1, colors2, canvasWidth, canvasHeight) {
 ━━━━━━━━━━━━━━━━━━━━━━━━
 📦 间距与容器分析规则
 ━━━━━━━━━━━━━━━━━━━━━━━━
-• **画布边界 padding**：靠近画布边缘的元素，需分析其与画布四边的固定间距
+• **设计分辨率边界 padding**：靠近画布边缘的元素，需分析其与设计分辨率画布四边的固定间距（换算到设计分辨率坐标系）
 • **容器必须递归拆解（至少 3 层）**：
   - 第 1 层：识别页面中的主要功能区块（如：左侧角色列表区、右下奖励区、底部进度条区等）
   - 第 2 层：每个区块内再拆分子容器（如：奖励区 → 奖励标题 + 奖励列表容器）
@@ -295,8 +329,10 @@ export async function compareImages(artFile, gameFile, {
   apiKey,
   baseUrl = '',
   thinkingBudget = 0.18,
-  canvasWidth = 2100,
+  canvasWidth = 1920,
   canvasHeight = 1080,
+  artDimensions = null,
+  gameDimensions = null,
   onProgress = () => {},
 } = {}) {
 
@@ -337,7 +373,7 @@ export async function compareImages(artFile, gameFile, {
   }
 
   const budgetTokens = Math.max(1024, Math.min(dollarsToTokens(thinkingBudget), MODEL_MAX_TOKENS - 8192))
-  const prompt = buildPrompt(colors1, colors2, canvasWidth, canvasHeight)
+  const prompt = buildPrompt(colors1, colors2, canvasWidth, canvasHeight, artDimensions, gameDimensions)
 
   const requestBody = {
     model: MODEL,

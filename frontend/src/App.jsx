@@ -7,7 +7,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
-  Eye, EyeOff, ChevronDown, Copy, RotateCcw,
+  Eye, EyeOff, Copy, RotateCcw,
   AlertCircle, AlertTriangle, CheckCircle2, Loader2, X, Plus,
   Wifi, WifiOff, Key, Clock, Shield, Server, Zap, ImageIcon, Info,
   History, Trash2, ArrowLeft, FileText
@@ -66,6 +66,20 @@ function setHashRoute(taskId) {
 const STORAGE_KEY = 'visual-diff-history'
 const MAX_HISTORY = 50
 const THUMB_SIZE = 80
+
+/** 读取图片文件的原始尺寸 */
+function getImageDimensions(file) {
+  if (!file) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      resolve({ width: img.naturalWidth, height: img.naturalHeight })
+      URL.revokeObjectURL(img.src)
+    }
+    img.onerror = () => resolve(null)
+    img.src = URL.createObjectURL(file)
+  })
+}
 
 /** 将 File 压缩为 base64 缩略图 */
 async function fileToThumbnail(file) {
@@ -313,7 +327,14 @@ function ErrorPanel({ error, onDismiss, onRetry }) {
 /* ─── 图片上传区 ─── */
 function ImageDropZone({ label, sublabel, image, onImageChange }) {
   const [dragOver, setDragOver] = useState(false)
+  const [dims, setDims] = useState(null)
   const inputRef = useRef(null)
+
+  // 检测图片分辨率
+  useEffect(() => {
+    if (!image) { setDims(null); return }
+    getImageDimensions(image).then(setDims)
+  }, [image])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -362,6 +383,7 @@ function ImageDropZone({ label, sublabel, image, onImageChange }) {
           <img src={preview} alt={label} className="preview-image" />
           <div className="preview-bar">
             <span className="preview-label">{label}</span>
+            {dims && <span className="preview-dims">{dims.width}×{dims.height}</span>}
             <span className="preview-size">{formatBytes(image.size)}</span>
             <button
               className="remove-btn"
@@ -856,7 +878,6 @@ export default function App() {
   const [thinkingBudget, setThinkingBudget] = useState(0.18)
   const [canvasW, setCanvasW] = useState(2100)
   const [canvasH, setCanvasH] = useState(1080)
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [artImage, setArtImage] = useState(null)
   const [gameImage, setGameImage] = useState(null)
@@ -945,12 +966,20 @@ export default function App() {
     setViewingResult('')
 
     try {
+      // 读取两张图片的实际分辨率
+      const [artDims, gameDims] = await Promise.all([
+        getImageDimensions(artImage),
+        getImageDimensions(gameImage),
+      ])
+
       const text = await compareImages(artImage, gameImage, {
         apiKey: apiKey.trim(),
         baseUrl,
         thinkingBudget,
         canvasWidth: canvasW,
         canvasHeight: canvasH,
+        artDimensions: artDims,
+        gameDimensions: gameDims,
         onProgress: setPhase,
       })
       setResult(text)
@@ -1069,36 +1098,46 @@ export default function App() {
                     className="input"
                   />
                 </div>
-                <button
-                  className={`toggle-more ${settingsOpen ? 'open' : ''}`}
-                  onClick={() => setSettingsOpen(!settingsOpen)}
-                  title="更多设置"
-                >
-                  <ChevronDown size={16} />
-                </button>
               </div>
 
-              {settingsOpen && (
-                <div className="config-extra">
-                  <div className="field">
-                    <label className="field-label">Thinking 预算 ${thinkingBudget.toFixed(2)}</label>
-                    <input
-                      type="range" min="0.01" max="0.18" step="0.01"
-                      value={thinkingBudget}
-                      onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
-                      className="range"
-                    />
-                  </div>
-                  <div className="field">
-                    <label className="field-label">画布宽度</label>
-                    <input type="number" value={canvasW} onChange={(e) => setCanvasW(parseInt(e.target.value) || 2100)} className="input input-narrow" />
-                  </div>
-                  <div className="field">
-                    <label className="field-label">画布高度</label>
-                    <input type="number" value={canvasH} onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)} className="input input-narrow" />
+              <div className="config-extra">
+                <div className="field">
+                  <label className="field-label">Thinking 预算 ${thinkingBudget.toFixed(2)}</label>
+                  <input
+                    type="range" min="0.01" max="0.18" step="0.01"
+                    value={thinkingBudget}
+                    onChange={(e) => setThinkingBudget(parseFloat(e.target.value))}
+                    className="range"
+                  />
+                </div>
+                <div className="field resolution-field">
+                  <label className="field-label">设计分辨率</label>
+                  <div className="resolution-group">
+                    <div className="resolution-presets">
+                      {[
+                        { label: '1920×1080', w: 1920, h: 1080, desc: '通用' },
+                        { label: '2380×1080', w: 2380, h: 1080, desc: '手游宽屏' },
+                        { label: '2560×1440', w: 2560, h: 1440, desc: '2K' },
+                        { label: '3840×2160', w: 3840, h: 2160, desc: '4K' },
+                      ].map(p => (
+                        <button
+                          key={p.label}
+                          className={`res-chip ${canvasW === p.w && canvasH === p.h ? 'active' : ''}`}
+                          onClick={() => { setCanvasW(p.w); setCanvasH(p.h) }}
+                          title={p.desc}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="resolution-custom">
+                      <input type="number" value={canvasW} onChange={(e) => setCanvasW(parseInt(e.target.value) || 1920)} className="input input-narrow" />
+                      <span className="resolution-x">×</span>
+                      <input type="number" value={canvasH} onChange={(e) => setCanvasH(parseInt(e.target.value) || 1080)} className="input input-narrow" />
+                    </div>
                   </div>
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Upload */}
